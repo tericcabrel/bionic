@@ -31,158 +31,141 @@ namespace Bionic
                 Password = "guest",
                 Port = 5672
             };
-            
-            using (var connection = factory.CreateConnection())
+
+            var connection = factory.CreateConnection();
+
+            var channel = connection.CreateModel();
+                
+            Console.WriteLine("Connected successfully to RabbitMQ!");
+
+            channel.QueueDeclare(queue: Q_CAPTURE_REQUEST, durable: false, exclusive: false, autoDelete: false, arguments: null);
+
+            var consumer = new EventingBasicConsumer(channel);
+
+            consumer.Received += (model, ea) =>
             {
-                using (var channel = connection.CreateModel())
+                var body = ea.Body;
+                var message = Encoding.UTF8.GetString(body);
+                string response = "SUCCESS";
+
+                Console.WriteLine(" [Q_CAPTURE_REQUEST] Received {0}", message);
+
+                try
                 {
-                    Console.WriteLine("Connected successfully to RabbitMQ!");
+                    var accessor = new DeviceAccessor();
+                    var device = accessor.AccessFingerprintDevice();
 
-                    channel.QueueDeclare(queue: Q_CAPTURE_REQUEST, durable: false, exclusive: false, autoDelete: false, arguments: null);
+                    device.SwitchLedState(false, false);
 
-                    var consumer = new EventingBasicConsumer(channel);
-
-                    consumer.Received += (model, ea) =>
+                    device.FingerDetected += (sender, eventArgs) =>
                     {
-                        var body = ea.Body;
-                        var message = Encoding.UTF8.GetString(body);
-                        string response = "SUCCESS";
+                        Console.WriteLine("Finger Detected!");
 
-                        Console.WriteLine(" [Q_CAPTURE_REQUEST] Received {0}", message);
+                        device.SwitchLedState(true, false);
 
-                        try
-                        {
-                            var accessor = new DeviceAccessor();
-                            var device = accessor.AccessFingerprintDevice();
+                    // Save fingerprint to temporary folder
+                    var fingerprint = device.ReadFingerprint();
+                        var tempFile = picturePath + "\\" + message + ".bmp";
+                        fingerprint.Save(tempFile);
 
-                            device.SwitchLedState(false, false);
+                        Console.WriteLine("Saved to " + tempFile);
 
-                            device.FingerDetected += (sender, eventArgs) =>
-                            {
-                                Console.WriteLine("Finger Detected!");
+                        Fingerprint fp = new Fingerprint();
+                        fp.AsBitmapSource = new BitmapImage(new Uri(tempFile, UriKind.RelativeOrAbsolute));
+                        Person ps = new Person();
+                        ps.Fingerprints.Add(fp);
+                        afisEngine.Extract(ps);
+                        File.WriteAllBytes(templatePath + "\\" + message + ".tmpl", fp.AsIsoTemplate);
 
-                                device.SwitchLedState(true, false);
+                        Console.WriteLine("Template saved successfully !");
 
-                            // Save fingerprint to temporary folder
-                            var fingerprint = device.ReadFingerprint();
-                                var tempFile = picturePath + "\\" + message + ".bmp";
-                                fingerprint.Save(tempFile);
+                    // TODO Notify to RabbitMQ
+                    sendToQueue(channel, Q_CAPTURE_RESPONSE, response);
 
-                                Console.WriteLine("Saved to " + tempFile);
-
-                                Fingerprint fp = new Fingerprint();
-                                fp.AsBitmapSource = new BitmapImage(new Uri(tempFile, UriKind.RelativeOrAbsolute));
-                                Person ps = new Person();
-                                ps.Fingerprints.Add(fp);
-                                afisEngine.Extract(ps);
-                                File.WriteAllBytes(templatePath + "\\" + message + ".tmpl", fp.AsIsoTemplate);
-
-                                Console.WriteLine("Template saved successfully !");
-
-                            // TODO Notify to RabbitMQ
-                            sendToQueue(channel, Q_CAPTURE_RESPONSE, response);
-
-                                device.SwitchLedState(false, false);
-                                device.Dispose();
-                            };
-
-                            device.FingerReleased += (sender, eventArgs) =>
-                            {
-                                Console.WriteLine("Finger Released!");
-                                device.SwitchLedState(false, true);
-                            };
-
-                            Console.WriteLine("Device Opened for capture");
-
-                            device.StartFingerDetection();
-                            device.SwitchLedState(false, true);
-                        }
-                        catch (Exception ex)
-                        {
-                            response = "ERROR";
-                            Console.WriteLine("Fingerprint Extraction: " + ex.Message);
-                            sendToQueue(channel, Q_CAPTURE_RESPONSE, response);
-                        }
+                        device.SwitchLedState(false, false);
+                        device.Dispose();
                     };
 
-                    channel.BasicConsume(queue: Q_CAPTURE_REQUEST, autoAck: true, consumer: consumer);
-                }
-
-                using (var channel = connection.CreateModel())
-                {
-                    channel.QueueDeclare(queue: Q_PERFORM_VERIFY_REQUEST, durable: false, exclusive: false, autoDelete: false, arguments: null);
-
-                    var consumer = new EventingBasicConsumer(channel);
-
-                    consumer.Received += (model, ea) =>
+                    device.FingerReleased += (sender, eventArgs) =>
                     {
-                        var body = ea.Body;
-                        var message = Encoding.UTF8.GetString(body);
-                        string response = "SUCCESS";
+                        Console.WriteLine("Finger Released!");
+                        device.SwitchLedState(false, true);
+                    };
 
-                        Console.WriteLine(" [Q_PERFORM_VERIFY_REQUEST] Received {0}", message);
+                    Console.WriteLine("Device Opened for capture");
+
+                    device.StartFingerDetection();
+                    device.SwitchLedState(false, true);
+                }
+                catch (Exception ex)
+                {
+                    response = "ERROR";
+                    Console.WriteLine("Fingerprint Extraction: " + ex.Message);
+                    sendToQueue(channel, Q_CAPTURE_RESPONSE, response);
+                }
+            };
+
+            channel.BasicConsume(queue: Q_CAPTURE_REQUEST, autoAck: true, consumer: consumer);
+               
+            channel.QueueDeclare(queue: Q_PERFORM_VERIFY_REQUEST, durable: false, exclusive: false, autoDelete: false, arguments: null);
+
+            var consumer1 = new EventingBasicConsumer(channel);
+
+            consumer1.Received += (model, ea) =>
+            {
+                byte[] body = ea.Body;
+                string response = "SUCCESS";
+
+                // Console.WriteLine(" [Q_PERFORM_VERIFY_REQUEST] Received {0}", Encoding.UTF8.GetString(body));
+
+                try
+                {
+                    var accessor = new DeviceAccessor();
+                    var device = accessor.AccessFingerprintDevice();
+
+                    device.SwitchLedState(false, false);
+
+                    device.FingerDetected += (sender, eventArgs) =>
+                    {
+                        Console.WriteLine("Finger Detected!");
+
+                        device.SwitchLedState(true, false);
+
+                        // Save fingerprint to temporary folder
+                        var fingerprint = device.ReadFingerprint();
+                        var tempFile = Path.ChangeExtension(Path.GetTempFileName(), "bmp");
+                        fingerprint.Save(tempFile);
+
+                        // Console.WriteLine("Saved to " + tempFile);
+
+                        Fingerprint strfp = new Fingerprint();
+                        strfp.AsIsoTemplate = body;
+                        Person storedPerson = new Person(strfp);
 
                         try
                         {
-                            var accessor = new DeviceAccessor();
-                            var device = accessor.AccessFingerprintDevice();
+                            Fingerprint fp = new Fingerprint();
+                            fp.AsBitmapSource = new BitmapImage(new Uri(tempFile, UriKind.RelativeOrAbsolute));
+                            Person scannedPerson = new Person();
+                            scannedPerson.Fingerprints.Add(fp);
+                            afisEngine.Extract(scannedPerson);
+
+                            float verify = afisEngine.Verify(storedPerson, scannedPerson);
+                            if (verify != 0)
+                            {
+                                Console.WriteLine("Success : " + verify);
+                            }
+                            else
+                            {
+                                response = "FAILED";
+                                Console.WriteLine("Failed : " + verify);
+                            }
+
+                            // Send to RabbitMQ
+                            sendToQueue(channel, Q_PERFORM_VERIFY_RESPONSE, response);
 
                             device.SwitchLedState(false, false);
-
-                            device.FingerDetected += (sender, eventArgs) =>
-                            {
-                                Console.WriteLine("Finger Detected!");
-
-                                device.SwitchLedState(true, false);
-
-                            // Save fingerprint to temporary folder
-                            var fingerprint = device.ReadFingerprint();
-                                var tempFile = picturePath + "\\" + message + ".bmp";
-                                fingerprint.Save(tempFile);
-
-                                Console.WriteLine("Saved to " + tempFile);
-
-                                Fingerprint strfp = new Fingerprint();
-                                strfp.AsIsoTemplate = File.ReadAllBytes(templatePath + "\\" + message + ".tmpl");
-                                Person storedPerson = new Person(strfp);
-
-                                try
-                                {
-                                    Fingerprint fp = new Fingerprint();
-                                    fp.AsBitmapSource = new BitmapImage(new Uri(tempFile, UriKind.RelativeOrAbsolute));
-                                    Person scannedPerson = new Person();
-                                    scannedPerson.Fingerprints.Add(fp);
-                                    afisEngine.Extract(scannedPerson);
-
-                                    float verify = afisEngine.Verify(storedPerson, scannedPerson);
-                                    if (verify != 0)
-                                    {
-                                        Console.WriteLine("Success : " + verify);
-                                    }
-                                    else
-                                    {
-                                        response = "FAILED";
-                                        Console.WriteLine("Failed : " + verify);
-                                    }
-
-                                // Send to RabbitMQ
-                                sendToQueue(channel, Q_PERFORM_VERIFY_RESPONSE, response);
-
-                                    device.SwitchLedState(false, false);
-                                    device.Dispose();
-                                }
-                                catch (Exception ex)
-                                {
-                                    response = "ERROR";
-                                    Console.WriteLine("Fingerprint Extraction: " + ex.Message);
-                                    sendToQueue(channel, Q_PERFORM_VERIFY_RESPONSE, response);
-                                }
-                            };
-
-                            Console.WriteLine("Device Opened for Matching");
-
-                            device.StartFingerDetection();
-                            device.SwitchLedState(false, true);
+                            device.Dispose();
                         }
                         catch (Exception ex)
                         {
@@ -192,10 +175,21 @@ namespace Bionic
                         }
                     };
 
-                    channel.BasicConsume(queue: Q_PERFORM_VERIFY_REQUEST, autoAck: true, consumer: consumer);
-                }
-            }
+                    Console.WriteLine("Device Opened for Matching");
 
+                    device.StartFingerDetection();
+                    device.SwitchLedState(false, true);
+                }
+                catch (Exception ex)
+                {
+                    response = "ERROR";
+                    Console.WriteLine("Fingerprint Extraction: " + ex.Message);
+                    sendToQueue(channel, Q_PERFORM_VERIFY_RESPONSE, response);
+                }
+            };
+
+            channel.BasicConsume(queue: Q_PERFORM_VERIFY_REQUEST, autoAck: true, consumer: consumer1);
+            
             Console.WriteLine("Press any key to exit!");
             Console.ReadLine();
         }
